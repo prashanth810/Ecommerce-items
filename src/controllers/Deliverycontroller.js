@@ -5,6 +5,7 @@ import { getActiveOtp, otpMatches } from "../helperfunctions/Otp.js";
 import { updateOrderStatus } from "../grpc/Grpchelper.js";
 import { notifyNewJob, notifyJobUnavailable, notifyRider } from "../socket/Socket.js";
 import { previewOf } from "../htmlfiles/Preview.js";
+import { resolveVendorDetails } from "../helperfunctions/VendorResolver.js";
 
 
 const ACTIVE_STATUSES = ["ACCEPTED", "PICKED_UP"];
@@ -17,16 +18,32 @@ const AvailableDeliveries = async (req, res) => {
     try {
         const rider = req.user;
 
-        if (!rider.isOnline) {
-            return res.status(400).json({ success: false, message: "Go online to see deliveries !!!" });
+        // Fetch latest available deliveries whether rider is online or offline
+        const list = await DeliveryModel.find({ status: "PENDING", declinedBy: { $ne: rider._id } })
+            .sort({ createdAt: -1 })
+            .limit(20);
+
+        for (const item of list) {
+            if (!item.pickupAddress || !item.storeName) {
+                const vendorInfo = await resolveVendorDetails(item.orderId, item.items);
+                if (vendorInfo.pickupAddress || vendorInfo.storeName) {
+                    item.pickupAddress = vendorInfo.pickupAddress || item.pickupAddress;
+                    item.storeName = vendorInfo.storeName || item.storeName;
+                    item.storePhone = vendorInfo.storePhone || item.storePhone;
+                    await DeliveryModel.updateOne(
+                        { _id: item._id },
+                        { $set: { pickupAddress: item.pickupAddress, storeName: item.storeName, storePhone: item.storePhone } }
+                    );
+                }
+            }
         }
 
-        const list = await DeliveryModel.find({ status: "PENDING", declinedBy: { $ne: rider._id } })
-            .sort({ createdAt: 1 })
-            .limit(20)
-            .lean();
-
-        return res.status(200).json({ success: true, count: list.length, data: list.map(previewOf) });
+        return res.status(200).json({
+            success: true,
+            isOnline: Boolean(rider.isOnline),
+            count: list.length,
+            data: list.map(previewOf),
+        });
     }
     catch (error) {
         return res.status(500).json({ success: false, message: error.message });
@@ -42,7 +59,11 @@ const AcceptDelivery = async (req, res) => {
         if (badId(id)) return res.status(400).json({ success: false, message: "Invalid delivery id !!!" });
 
         if (!rider.isOnline) {
-            return res.status(400).json({ success: false, message: "Go online to accept deliveries !!!" });
+            return res.status(400).json({
+                success: false,
+                isOnline: false,
+                message: "Please make your status online, then accept it !!!",
+            });
         }
 
         const activeCount = await DeliveryModel.countDocuments({ riderId: rider._id, status: { $in: ACTIVE_STATUSES } });
@@ -56,7 +77,7 @@ const AcceptDelivery = async (req, res) => {
         const now = new Date();
 
         // atomic: only one rider can win a PENDING delivery
-        const delivery = await DeliveryModel.findOneAndUpdate(
+        let delivery = await DeliveryModel.findOneAndUpdate(
             { _id: id, status: "PENDING", declinedBy: { $ne: rider._id } },
             {
                 $set: { status: "ACCEPTED", riderId: rider._id, acceptedAt: now, orderSynced: true },
@@ -66,7 +87,34 @@ const AcceptDelivery = async (req, res) => {
         ).select(HIDE);
 
         if (!delivery) {
-            return res.status(409).json({ success: false, message: "This delivery is no longer available !!!" });
+            // Check if already accepted by this rider
+            const alreadyMine = await DeliveryModel.findOne({ _id: id, riderId: rider._id, status: { $in: ACTIVE_STATUSES } }).select(HIDE);
+            if (alreadyMine) {
+                delivery = alreadyMine;
+            } else {
+                return res.status(409).json({ success: false, message: "This delivery is no longer available !!!" });
+            }
+        }
+
+        // Ensure pickupAddress and store details are populated
+        if (!delivery.pickupAddress || !delivery.storeName) {
+            const vendorInfo = await resolveVendorDetails(delivery.orderId, delivery.items);
+            if (vendorInfo.pickupAddress || vendorInfo.storeName) {
+                const updated = await DeliveryModel.findByIdAndUpdate(
+                    delivery._id,
+                    {
+                        $set: {
+                            pickupAddress: vendorInfo.pickupAddress || delivery.pickupAddress,
+                            storeName: vendorInfo.storeName || delivery.storeName,
+                            storePhone: vendorInfo.storePhone || delivery.storePhone,
+                        },
+                    },
+                    { returnDocument: "after" }
+                ).select(HIDE);
+                if (updated) {
+                    delivery = updated;
+                }
+            }
         }
 
         // everybody else loses this job, the accepting rider gets the full details (all his devices)
@@ -286,6 +334,21 @@ const MyActiveDeliveries = async (req, res) => {
             .select(HIDE)
             .sort({ acceptedAt: 1 });
 
+        for (const item of list) {
+            if (!item.pickupAddress || !item.storeName) {
+                const vendorInfo = await resolveVendorDetails(item.orderId, item.items);
+                if (vendorInfo.pickupAddress || vendorInfo.storeName) {
+                    item.pickupAddress = vendorInfo.pickupAddress || item.pickupAddress;
+                    item.storeName = vendorInfo.storeName || item.storeName;
+                    item.storePhone = vendorInfo.storePhone || item.storePhone;
+                    await DeliveryModel.updateOne(
+                        { _id: item._id },
+                        { $set: { pickupAddress: item.pickupAddress, storeName: item.storeName, storePhone: item.storePhone } }
+                    );
+                }
+            }
+        }
+
         return res.status(200).json({ success: true, count: list.length, data: list });
     }
     catch (error) {
@@ -328,10 +391,28 @@ const GetMyDelivery = async (req, res) => {
     try {
         if (badId(id)) return res.status(400).json({ success: false, message: "Invalid delivery id !!!" });
 
-        const delivery = await DeliveryModel.findOne({ _id: id, riderId: req.user._id }).select(HIDE);
+        let delivery = await DeliveryModel.findOne({ _id: id, riderId: req.user._id }).select(HIDE);
 
         if (!delivery) {
             return res.status(404).json({ success: false, message: "Delivery not found !!!" });
+        }
+
+        if (!delivery.pickupAddress || !delivery.storeName) {
+            const vendorInfo = await resolveVendorDetails(delivery.orderId, delivery.items);
+            if (vendorInfo.pickupAddress || vendorInfo.storeName) {
+                const updated = await DeliveryModel.findByIdAndUpdate(
+                    delivery._id,
+                    {
+                        $set: {
+                            pickupAddress: vendorInfo.pickupAddress || delivery.pickupAddress,
+                            storeName: vendorInfo.storeName || delivery.storeName,
+                            storePhone: vendorInfo.storePhone || delivery.storePhone,
+                        },
+                    },
+                    { returnDocument: "after" }
+                ).select(HIDE);
+                if (updated) delivery = updated;
+            }
         }
 
         return res.status(200).json({ success: true, data: delivery });

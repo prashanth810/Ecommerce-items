@@ -8,6 +8,7 @@ import RiderModel from "../models/Ridermodel.js";
 import { getActiveOtp } from "../helperfunctions/Otp.js";
 import Envs from "../utils/Envs.js";
 import { notifyNewJob, notifyJobUnavailable, notifyRider } from "../socket/Socket.js";
+import { resolveVendorDetails } from "../helperfunctions/VendorResolver.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -73,13 +74,26 @@ const CreateDelivery = async (call, callback) => {
 
         if (!delivery) {
             try {
+                let pickupAddress = r.pickupAddress || "";
+                let storeName = "";
+                let storePhone = "";
+
+                if (!pickupAddress) {
+                    const resolved = await resolveVendorDetails(r.orderId, items);
+                    pickupAddress = resolved.pickupAddress;
+                    storeName = resolved.storeName;
+                    storePhone = resolved.storePhone;
+                }
+
                 delivery = await DeliveryModel.create({
                     orderId: r.orderId,
                     customerId: r.customerId,
                     customerName: r.customerName,
                     customerPhone: r.customerPhone,
                     address: a,
-                    pickupAddress: r.pickupAddress,
+                    pickupAddress,
+                    storeName,
+                    storePhone,
                     items,
                     paymentMethod,
                     amountToCollect: paymentMethod === "COD" ? amount : 0,

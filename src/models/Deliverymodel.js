@@ -35,6 +35,8 @@ const DeliverySchema = new mongoose.Schema({
     customerPhone: { type: String, default: "" },
     address: { type: Object, required: true },        // drop address snapshot
     pickupAddress: { type: String, default: "" },     // store / vendor address
+    storeName: { type: String, default: "" },         // store / vendor name
+    storePhone: { type: String, default: "" },        // store / vendor contact phone
     items: [itemSchema],
     paymentMethod: { type: String, enum: ["COD", "ONLINE"], required: true },
     amountToCollect: { type: Number, default: 0 },    // order total for COD, 0 for ONLINE

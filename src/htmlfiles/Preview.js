@@ -2,6 +2,7 @@
 const previewOf = (d) => ({
     _id: d._id,
     orderId: d.orderId,
+    storeName: d.storeName || "",
     pickupAddress: d.pickupAddress,
     dropArea: {
         city: d.address?.city || "",

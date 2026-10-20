@@ -28,6 +28,12 @@ const Envs = {
     MAX_OTP_ATTEMPTS: Number(env.MAX_OTP_ATTEMPTS) || 5,
     OTP_LOCK_MINUTES: Number(env.OTP_LOCK_MINUTES) || 15,
     MAX_ACTIVE_DELIVERIES: Number(env.MAX_ACTIVE_DELIVERIES) || 2,
+
+    // cross-service database URLs for resolving vendor / store information
+    PAYMENT_MONGO_URL: env.PAYMENT_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@paymentmicro.8zrohor.mongodb.net/payment",
+    PRODUCT_MONGO_URL: env.PRODUCT_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@productmicro.0twnlja.mongodb.net/products",
+    USER_MONGO_URL: env.USER_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@user.8rzcdfd.mongodb.net/users",
+    ADDRESS_MONGO_URL: env.ADDRESS_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@addressmicro.6o5gqvd.mongodb.net/address",
 };
 
 export default Envs;
