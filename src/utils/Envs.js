@@ -16,8 +16,8 @@ const Envs = {
 
     // grpc
     GRPC_PORT: env.GRPC_PORT || 3006,
-    ORDER_GRPC_URL: env.ORDER_GRPC_URL || "127.0.0.1:3004",
-    INTERNAL_GRPC_KEY: env.INTERNAL_GRPC_KEY || "ecommerce_grpc_internal_secret_key_2026",
+    ORDER_GRPC_URL: env.ORDER_GRPC_URL,
+    INTERNAL_GRPC_KEY: env.INTERNAL_GRPC_KEY,
 
     // retry failed order-status updates (ms)
     SYNC_RECONCILE_MS: Number(env.SYNC_RECONCILE_MS) || 60000,
@@ -30,10 +30,10 @@ const Envs = {
     MAX_ACTIVE_DELIVERIES: Number(env.MAX_ACTIVE_DELIVERIES) || 2,
 
     // cross-service database URLs for resolving vendor / store information
-    PAYMENT_MONGO_URL: env.PAYMENT_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@paymentmicro.8zrohor.mongodb.net/payment",
-    PRODUCT_MONGO_URL: env.PRODUCT_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@productmicro.0twnlja.mongodb.net/products",
-    USER_MONGO_URL: env.USER_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@user.8rzcdfd.mongodb.net/users",
-    ADDRESS_MONGO_URL: env.ADDRESS_MONGO_URL || "mongodb+srv://srikanthdfg_db_user:srikanthdfg@addressmicro.6o5gqvd.mongodb.net/address",
+    PAYMENT_MONGO_URL: env.PAYMENT_MONGO_URL,
+    PRODUCT_MONGO_URL: env.PRODUCT_MONGO_URL,
+    USER_MONGO_URL: env.USER_MONGO_URL,
+    ADDRESS_MONGO_URL: env.ADDRESS_MONGO_URL,
 };
 
 export default Envs;
