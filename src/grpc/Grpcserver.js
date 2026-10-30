@@ -8,7 +8,8 @@ import RiderModel from "../models/Ridermodel.js";
 import { getActiveOtp } from "../helperfunctions/Otp.js";
 import Envs from "../utils/Envs.js";
 import { notifyNewJob, notifyJobUnavailable, notifyRider } from "../socket/Socket.js";
-import { resolveVendorDetails } from "../helperfunctions/VendorResolver.js";
+import { resolveVendorDetails, resolveCustomerEmail } from "../helperfunctions/VendorResolver.js";
+import { getUserEmail } from "./Grpchelper.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -85,11 +86,24 @@ const CreateDelivery = async (call, callback) => {
                     storePhone = resolved.storePhone;
                 }
 
+                let customerEmail = r.customerEmail ? String(r.customerEmail).trim() : "";
+                if (!customerEmail) {
+                    try {
+                        customerEmail = await getUserEmail(r.customerId);
+                    } catch (e) {}
+                }
+                if (!customerEmail) {
+                    try {
+                        customerEmail = await resolveCustomerEmail(r.customerId);
+                    } catch (e) {}
+                }
+
                 delivery = await DeliveryModel.create({
                     orderId: r.orderId,
                     customerId: r.customerId,
                     customerName: r.customerName,
                     customerPhone: r.customerPhone,
+                    customerEmail: customerEmail || "",
                     address: a,
                     pickupAddress,
                     storeName,
@@ -110,7 +124,13 @@ const CreateDelivery = async (call, callback) => {
         }
 
         // make sure a customer OTP exists before the rider arrives
-        await getActiveOtp(r.customerId);
+        const otpRecord = await getActiveOtp(r.customerId);
+        if (otpRecord && delivery) {
+            await DeliveryModel.updateOne(
+                { _id: delivery._id },
+                { $set: { deliveryOtp: otpRecord.otp } }
+            );
+        }
 
         // only a brand new job is pushed to riders (retries never notify twice)
         if (created) notifyNewJob(delivery.toObject());

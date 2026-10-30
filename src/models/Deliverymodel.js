@@ -33,6 +33,7 @@ const DeliverySchema = new mongoose.Schema({
     customerId: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
     customerName: { type: String, default: "" },
     customerPhone: { type: String, default: "" },
+    customerEmail: { type: String, default: "" },
     address: { type: Object, required: true },        // drop address snapshot
     pickupAddress: { type: String, default: "" },     // store / vendor address
     storeName: { type: String, default: "" },         // store / vendor name
@@ -57,6 +58,7 @@ const DeliverySchema = new mongoose.Schema({
     cancelReason: { type: String, trim: true, maxlength: 300 },
 
     // ---- otp check at the door ----
+    deliveryOtp: { type: String, default: null },
     otpAttempts: { type: Number, default: 0 },
     otpLockedUntil: { type: Date, default: null },
     codCollected: { type: Boolean, default: false },

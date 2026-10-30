@@ -46,4 +46,43 @@ const updateOrderStatus = (orderId, status, deliveredAt = "") =>
         }
     });
 
-export { updateOrderStatus };
+// ---------- user service: get the customer email by id ----------
+let authClient;
+const getAuthClient = () => {
+    if (!authClient) {
+        const proto = grpc.loadPackageDefinition(
+            protoLoader.loadSync(path.join(__dirname, "./Auth.proto"), {
+                keepCase: true, longs: String, enums: String, defaults: true, oneofs: true,
+            })
+        );
+        authClient = new proto.auth.AuthService(Envs.AUTH_GRPC_URL, grpc.credentials.createInsecure());
+    }
+    return authClient;
+};
+
+// Returns the email of the user, or an empty string when not found. Never throws.
+const getUserEmail = (userId) =>
+    new Promise((resolve) => {
+        try {
+            const metadata = new grpc.Metadata();
+            metadata.set("x-internal-key", Envs.INTERNAL_GRPC_KEY || "");
+
+            getAuthClient().GetUserById(
+                { userId: String(userId) },
+                metadata,
+                { deadline: Date.now() + 5000 },
+                (error, response) => {
+                    if (error) {
+                        console.error("Riderservice gRPC GetUserById error:", error.message);
+                        return resolve("");
+                    }
+                    resolve(response?.success ? String(response.data?.email || "").trim() : "");
+                }
+            );
+        } catch (error) {
+            console.error("Riderservice gRPC GetUserById error:", error.message);
+            resolve("");
+        }
+    });
+
+export { updateOrderStatus, getUserEmail };

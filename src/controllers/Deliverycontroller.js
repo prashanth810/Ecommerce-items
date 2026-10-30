@@ -1,15 +1,15 @@
 import mongoose from "mongoose";
 import DeliveryModel from "../models/Deliverymodel.js";
 import Envs from "../utils/Envs.js";
-import { getActiveOtp, otpMatches } from "../helperfunctions/Otp.js";
-import { updateOrderStatus } from "../grpc/Grpchelper.js";
+import { getActiveOtp, otpMatches, sendDeliveryOtpEmail, clearCustomerOtp } from "../helperfunctions/Otp.js";
+import { updateOrderStatus, getUserEmail } from "../grpc/Grpchelper.js";
 import { notifyNewJob, notifyJobUnavailable, notifyRider } from "../socket/Socket.js";
 import { previewOf } from "../htmlfiles/Preview.js";
-import { resolveVendorDetails } from "../helperfunctions/VendorResolver.js";
+import { resolveVendorDetails, resolveCustomerEmail } from "../helperfunctions/VendorResolver.js";
 
 
 const ACTIVE_STATUSES = ["ACCEPTED", "PICKED_UP"];
-const HIDE = "-declinedBy -history -otpAttempts -otpLockedUntil";
+const HIDE = "-declinedBy -history -otpAttempts -otpLockedUntil -deliveryOtp";
 
 const badId = (id) => !mongoose.isValidObjectId(id);
 
@@ -115,6 +115,28 @@ const AcceptDelivery = async (req, res) => {
                     delivery = updated;
                 }
             }
+        }
+
+        // Pre-generate active customer delivery OTP & resolve customer email early
+        try {
+            const otpRecord = await getActiveOtp(delivery.customerId);
+            const updateFields = {};
+            if (otpRecord?.otp) {
+                updateFields.deliveryOtp = otpRecord.otp;
+            }
+            if (!delivery.customerEmail) {
+                let resolvedEmail = await getUserEmail(delivery.customerId);
+                if (!resolvedEmail) resolvedEmail = await resolveCustomerEmail(delivery.customerId);
+                if (resolvedEmail) {
+                    updateFields.customerEmail = resolvedEmail;
+                    delivery.customerEmail = resolvedEmail;
+                }
+            }
+            if (Object.keys(updateFields).length > 0) {
+                await DeliveryModel.updateOne({ _id: delivery._id }, { $set: updateFields });
+            }
+        } catch (prepErr) {
+            console.error("[AcceptDelivery] OTP / email prep error:", prepErr.message);
         }
 
         // everybody else loses this job, the accepting rider gets the full details (all his devices)
@@ -226,9 +248,63 @@ const PickupDelivery = async (req, res) => {
         const synced = await updateOrderStatus(delivery.orderId, "OUT_FOR_DELIVERY");
         if (!synced) await DeliveryModel.updateOne({ _id: delivery._id }, { $set: { orderSynced: false } });
 
-        return res.status(200).json({ success: true, message: "Items picked up, go to the customer", data: delivery });
+        // send the customer's delivery OTP (same one stored in db) to his email
+        const mail = await sendDeliveryOtpEmail({
+            customerId: delivery.customerId,
+            customerName: delivery.customerName,
+            customerEmail: delivery.customerEmail,
+            orderId: delivery.orderId,
+            deliveryId: delivery._id,
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Items picked up, go to the customer",
+            otpEmailSent: mail.sent,
+            otpEmailMessage: mail.sent
+                ? `OTP email sent to customer (${mail.email})`
+                : (mail.reason || "Could not send OTP email to customer"),
+            data: delivery,
+        });
     }
     catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// ---------- resend customer OTP email if needed ----------
+const ResendDeliveryOtp = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const rider = req.user;
+
+        if (badId(id)) return res.status(400).json({ success: false, message: "Invalid delivery id !!!" });
+
+        const delivery = await DeliveryModel.findOne({ _id: id, riderId: rider._id, status: "PICKED_UP" });
+        if (!delivery) {
+            return res.status(404).json({ success: false, message: "Active picked-up delivery not found !!!" });
+        }
+
+        const mail = await sendDeliveryOtpEmail({
+            customerId: delivery.customerId,
+            customerName: delivery.customerName,
+            customerEmail: delivery.customerEmail,
+            orderId: delivery.orderId,
+            deliveryId: delivery._id,
+        });
+
+        if (!mail.sent) {
+            return res.status(500).json({
+                success: false,
+                message: mail.reason || "Failed to resend OTP email",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `OTP email resent to customer (${mail.email})`,
+        });
+    } catch (error) {
         return res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -266,11 +342,12 @@ const CompleteDelivery = async (req, res) => {
         }
 
         const customerOtp = await getActiveOtp(delivery.customerId);
-        if (!customerOtp) {
+        const expectedOtp = delivery.deliveryOtp || customerOtp?.otp;
+        if (!expectedOtp) {
             return res.status(500).json({ success: false, message: "Customer OTP not available !!!" });
         }
 
-        if (!otpMatches(String(otp).trim(), customerOtp.otp)) {
+        if (!otpMatches(String(otp).trim(), expectedOtp)) {
             const after = await DeliveryModel.findByIdAndUpdate(
                 delivery._id, { $inc: { otpAttempts: 1 } }, { returnDocument: "after" }
             );
@@ -299,6 +376,7 @@ const CompleteDelivery = async (req, res) => {
                 $set: {
                     status: "DELIVERED",
                     deliveredAt: now,
+                    deliveryOtp: null,
                     otpAttempts: 0,
                     otpLockedUntil: null,
                     codCollected: delivery.paymentMethod === "COD",
@@ -311,6 +389,9 @@ const CompleteDelivery = async (req, res) => {
         if (!done) {
             return res.status(409).json({ success: false, message: "Delivery status changed, refresh and try again !!!" });
         }
+
+        // OTP is used and delivery is confirmed -> remove/clear OTP from db
+        await clearCustomerOtp(done.customerId, done._id);
 
         const synced = await updateOrderStatus(done.orderId, "DELIVERED", now.toISOString());
         if (!synced) await DeliveryModel.updateOne({ _id: done._id }, { $set: { orderSynced: false } });
@@ -424,5 +505,5 @@ const GetMyDelivery = async (req, res) => {
 
 export {
     AvailableDeliveries, AcceptDelivery, DeclineDelivery, CancelDelivery,
-    PickupDelivery, CompleteDelivery, MyActiveDeliveries, MyDeliveryHistory, GetMyDelivery,
+    PickupDelivery, CompleteDelivery, ResendDeliveryOtp, MyActiveDeliveries, MyDeliveryHistory, GetMyDelivery,
 };

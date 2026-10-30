@@ -133,4 +133,24 @@ const resolveVendorDetails = async (orderId, items = []) => {
     }
 };
 
-export { resolveVendorDetails };
+/**
+ * Finds the customer email from the user service database (users collection).
+ * Returns an empty string when it cannot be found.
+ */
+const resolveCustomerEmail = async (customerId) => {
+    try {
+        if (!customerId || !mongoose.isValidObjectId(customerId)) return "";
+        const uConn = getUserConn();
+        if (!uConn) return "";
+        const user = await uConn.collection("users").findOne(
+            { _id: new mongoose.Types.ObjectId(String(customerId)) },
+            { projection: { email: 1 } }
+        );
+        return user?.email ? String(user.email).trim() : "";
+    } catch (err) {
+        console.error("[VendorResolver] error reading customer email:", err.message);
+        return "";
+    }
+};
+
+export { resolveVendorDetails, resolveCustomerEmail };

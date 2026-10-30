@@ -3,7 +3,7 @@ import Authmiddleware from "../middlewares/Authmiddleware.js";
 import Ratelimit from "../middlewares/Ratelimit.js";
 import {
     AvailableDeliveries, AcceptDelivery, DeclineDelivery, CancelDelivery,
-    PickupDelivery, CompleteDelivery, MyActiveDeliveries, MyDeliveryHistory, GetMyDelivery,
+    PickupDelivery, CompleteDelivery, ResendDeliveryOtp, MyActiveDeliveries, MyDeliveryHistory, GetMyDelivery,
 } from "../controllers/Deliverycontroller.js";
 
 const Deliveryroute = express.Router();
@@ -21,6 +21,7 @@ Deliveryroute.post("/deliveries/:id/accept", limit(15), Authmiddleware, AcceptDe
 Deliveryroute.post("/deliveries/:id/decline", limit(20), Authmiddleware, DeclineDelivery);
 Deliveryroute.post("/deliveries/:id/cancel", limit(10), Authmiddleware, CancelDelivery);
 Deliveryroute.patch("/deliveries/:id/pickup", limit(15), Authmiddleware, PickupDelivery);
+Deliveryroute.post("/deliveries/:id/resend-otp", limit(10), Authmiddleware, ResendDeliveryOtp);
 Deliveryroute.post("/deliveries/:id/deliver", limit(20), Authmiddleware, CompleteDelivery);
 
 export default Deliveryroute;
