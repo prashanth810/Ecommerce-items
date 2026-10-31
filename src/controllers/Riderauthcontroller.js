@@ -10,12 +10,13 @@ import {
 // ---------------------------------------------------------------------------
 // Rider register / login / onboarding.
 //
-//  1. POST /rider/register              name, email, password  -> creates a RiderApplication + onboarding token
+//  1. POST /rider/register              name, email, password (+ optional full details)
+//                                       -> creates RiderApplication OR directly creates Rider (pending verification)
 //  2. PUT  /rider/onboarding/personal   phone, dob, gender, address, emergency contact, profile_pic
 //  3. PUT  /rider/onboarding/vehicle    vehicle type / name / number, vehicle_images
 //  4. PUT  /rider/onboarding/documents  licence, aadhaar, pan (+ images, stored PRIVATE)
-//  5. POST /rider/onboarding/submit     creates the real Rider, returns the normal login token
-//  6. POST /rider/login                 rider -> normal token | unfinished application -> onboarding token
+//  5. POST /rider/onboarding/submit     creates the Rider (status: pending, is_active: false)
+//  6. POST /rider/login                 rider (must be verified by admin) | unfinished application -> onboarding token
 // ---------------------------------------------------------------------------
 
 const VEHICLES = ["bicycle", "bike", "scooter"];
@@ -158,9 +159,11 @@ const duplicateField = (error) => Object.keys(error?.keyPattern || error?.keyVal
 const RiderRegister = async (req, res) => {
     const body = req.body || {};
     try {
-        const name = text(body.name);
+        const name = text(body.name || body.fullName);
         const email = text(body.email).toLowerCase();
         const password = typeof body.password === "string" ? body.password : "";
+        const rawPhone = given(body, "phone", "mobile");
+        const vehicleTypeSent = given(body, "vehicleType", "vehicle_type");
 
         if (!name) return fail(res, "Name is required !!!");
         if (name.length < 2 || name.length > 50) return fail(res, "Name must be 2 to 50 characters !!!");
@@ -175,21 +178,81 @@ const RiderRegister = async (req, res) => {
         }
 
         if (await RiderModel.exists({ email })) {
-            return fail(res, "Rider already registered, please login !!!", 409);
+            return fail(res, "Rider already registered with this email, please login !!!", 409);
         }
 
-        // never overwrite somebody's half finished registration (that would let anyone take it over)
+        const phone = rawPhone ? cleanPhone(rawPhone) : null;
+        if (rawPhone && !phone) return fail(res, "Enter a valid 10-digit mobile number !!!");
+        if (phone && await RiderModel.exists({ phone })) {
+            return fail(res, "Phone number already in use by another rider !!!", 409);
+        }
+
+        // ─── If full onboarding details provided (e.g. from UI all-in-one submission) ───
+        if (phone || vehicleTypeSent) {
+            const vehicleType = vehicleTypeSent ? text(vehicleTypeSent).toLowerCase() : "bike";
+            const validVehicles = ["bicycle", "bike", "scooter"];
+            if (!validVehicles.includes(vehicleType)) {
+                return fail(res, "Vehicle type must be bicycle, bike, or scooter");
+            }
+
+            const hashedPassword = await bcrypt.hash(password, await bcrypt.genSalt(10));
+
+            // Profile photo upload if provided
+            let profilePicUrl = "";
+            const photoFile = fileOf(req, "photo") || fileOf(req, "profile_pic");
+            if (photoFile) {
+                try {
+                    profilePicUrl = await uploadToCloudinary(photoFile.buffer, "riders/profiles");
+                } catch (e) {
+                    console.warn("Rider photo upload failed:", e.message);
+                }
+            }
+
+            // Create Rider account in pending verification state
+            const rider = await RiderModel.create({
+                name,
+                email,
+                phone: phone || `temp_${Date.now()}`,
+                password: hashedPassword,
+                profile_pic: profilePicUrl,
+                vehicleType,
+                vehicleNumber: text(given(body, "vehicleNumber", "vehicle_number")).toUpperCase(),
+                vehicleName: text(given(body, "vehicleModel", "vehicleName")),
+                address: {
+                    street: text(body.address || body.street),
+                    city: text(body.city),
+                    pincode: text(body.pincode),
+                },
+                gender: text(body.gender) || "other",
+                date_of_birth: body.dob ? new Date(body.dob) : undefined,
+                // Verification requirements
+                is_active: false,
+                is_verified: false,
+                verification_status: "pending",
+                verification_notes: "Awaiting admin verification",
+            });
+
+            // Clean any old unfinished application
+            await RiderApplicationModel.deleteOne({ email });
+
+            return res.status(201).json({
+                success: true,
+                message: "Your account is under verification. Please wait 24 - 48 hours for admin verification.",
+                underVerification: true,
+                data: rider.toJSON(),
+            });
+        }
+
+        // ─── Otherwise: Step 1 of multi-step onboarding ────────────────────────
         const pending = await RiderApplicationModel.findOne({ email }).select("status");
         if (pending?.status === "ONBOARDING") {
             return fail(res, "Registration already started with this email, please login to continue !!!", 409);
         }
         if (pending) {
-            // COMPLETED but the rider no longer exists (account was deleted) -> start again
             await RiderApplicationModel.deleteOne({ _id: pending._id });
         }
 
         const hashedPassword = await bcrypt.hash(password, await bcrypt.genSalt(10));
-
         const application = await RiderApplicationModel.create({ name, email, password: hashedPassword });
 
         return res.status(201).json({
@@ -200,7 +263,7 @@ const RiderRegister = async (req, res) => {
         });
     }
     catch (error) {
-        if (error?.code === 11000) return fail(res, "Registration already started with this email, please login !!!", 409);
+        if (error?.code === 11000) return fail(res, "Registration already started or phone in use, please login !!!", 409);
         console.error("RiderRegister error:", error.message);
         return fail(res, "Something went wrong. Please try again.", 500);
     }
@@ -209,31 +272,45 @@ const RiderRegister = async (req, res) => {
 // ============================ login ============================
 
 const RiderLogin = async (req, res) => {
-    const { email: rawEmail, password } = req.body || {};
+    const { email: rawEmail, phone: rawPhone, password } = req.body || {};
     try {
+        const identifier = text(rawEmail || rawPhone).toLowerCase();
 
-        // Allow only email and password
-        if (Object.keys(req.body || {}).length !== 2 ||
-            !Object.hasOwn(req.body || {}, "email") ||
-            !Object.hasOwn(req.body || {}, "password")) {
-            return fail(res, "Only email and password are allowed !!!");
-        }
-
-        const email = text(rawEmail).toLowerCase();
-
-        if (!email) return fail(res, "Email is required !!!");
-        if (!validator.isEmail(email)) return fail(res, "Provide valid email !!!");
+        if (!identifier) return fail(res, "Email or phone number is required !!!");
         if (typeof password !== "string" || !password) {
             return fail(res, "Password is required !!!");
         }
 
         const invalid = () => fail(res, "Invalid email or password !!!", 401);
 
-        // 1. Finished rider -> normal token
-        const rider = await RiderModel.findOne({ email });
+        // Find rider by email or phone
+        const cleanedPhone = cleanPhone(identifier);
+        const rider = await RiderModel.findOne({
+            $or: [
+                { email: identifier },
+                ...(cleanedPhone ? [{ phone: cleanedPhone }] : []),
+            ],
+        });
 
         if (rider) {
             if (!(await bcrypt.compare(password, rider.password))) return invalid();
+
+            // Check admin verification status
+            if (!rider.is_verified || rider.verification_status === "pending") {
+                return res.status(403).json({
+                    success: false,
+                    message: "Your account is under verification. Please wait 24 - 48 hours for admin verification.",
+                    underVerification: true,
+                });
+            }
+
+            if (rider.verification_status === "rejected") {
+                return res.status(403).json({
+                    success: false,
+                    message: `Your rider application was not approved.${rider.verification_notes ? " Reason: " + rider.verification_notes : ""}`,
+                    rejected: true,
+                });
+            }
 
             if (!rider.is_active) {
                 return fail(res, "Your rider account is disabled !!!", 403);
@@ -248,9 +325,9 @@ const RiderLogin = async (req, res) => {
             });
         }
 
-        // 2. Incomplete onboarding
+        // 2. Incomplete onboarding application
         const application = await RiderApplicationModel.findOne({
-            email,
+            email: identifier,
             status: "ONBOARDING",
         });
 
@@ -288,8 +365,6 @@ const SavePersonal = async (req, res) => {
     try {
         const app = req.application;
         const old = app.toObject();
-
-        // every field may be sent again or left out (then the saved value is kept); at the end all must exist
 
         // phone
         let phone = old.phone;
@@ -526,7 +601,7 @@ const SaveDocuments = async (req, res) => {
         if (!aadhaarImage && !old.aadhaarImage) return fail(res, "Aadhaar image is required !!!");
         if (panImage && !panNumber) return fail(res, "PAN number is required with the PAN image !!!");
 
-        // all checks passed -> only now the PRIVATE images are uploaded (we keep only the public_id)
+        // all checks passed -> only now the PRIVATE images are uploaded
         const folder = `riders/private/${app._id}`;
         const jobs = [
             ["licenseImage", licenseImage, "license"],
@@ -571,7 +646,6 @@ const SaveDocuments = async (req, res) => {
 // ============================ step 4: submit ============================
 const SubmitOnboarding = async (req, res) => {
     try {
-        // the password hash is not loaded by Rideronboardauth, but it is needed to create the rider
         const app = await RiderApplicationModel.findOne({ _id: req.application._id, status: "ONBOARDING" });
 
         if (!app) return fail(res, "Rider registration not found or already completed, please login !!!", 404);
@@ -597,7 +671,7 @@ const SubmitOnboarding = async (req, res) => {
                 name: a.name,
                 email: a.email,
                 phone: a.phone,
-                password: a.password,                       // already hashed at register
+                password: a.password,
                 profile_pic: a.profile_pic || "",
                 date_of_birth: a.date_of_birth,
                 gender: a.gender,
@@ -615,6 +689,11 @@ const SubmitOnboarding = async (req, res) => {
                     panNumber: a.panNumber,
                     panImage: a.panImage,
                 },
+                // Account created in pending verification state
+                is_active: false,
+                is_verified: false,
+                verification_status: "pending",
+                verification_notes: "Awaiting admin verification",
             });
         } catch (error) {
             if (error?.code === 11000) {
@@ -641,14 +720,14 @@ const SubmitOnboarding = async (req, res) => {
                 }
             );
         } catch (error) {
-            // not fatal: the rider is created, login finds the rider first
             console.error("SubmitOnboarding close application error:", error.message);
         }
 
+        // Account is submitted for verification: do NOT send a login token!
         return res.status(201).json({
             success: true,
-            message: "Onboarding completed, you can start delivering now !!!",
-            token: CreateToken(rider),
+            message: "Your account is under verification. Please wait 24 - 48 hours for admin verification.",
+            underVerification: true,
             data: rider.toJSON(),
         });
     }

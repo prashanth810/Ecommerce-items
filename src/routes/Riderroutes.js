@@ -28,8 +28,15 @@ const files = (fields) => (req, res, next) => {
     });
 };
 
-// ---- register (name, email, password) and login (only riders who finished every step) ----
-Riderroute.post("/rider/register", limit(5), RiderRegister);
+const anyUpload = (req, res, next) => {
+    uploader.any()(req, res, (err) => {
+        if (!err) return next();
+        return res.status(400).json({ success: false, message: `Upload error: ${err.message}` });
+    });
+};
+
+// ---- register (name, email, password OR full details) and login (verified riders only) ----
+Riderroute.post("/rider/register", limit(5), anyUpload, RiderRegister);
 Riderroute.post("/rider/login", limit(5), RiderLogin);
 
 // ---- remaining steps, needs the onboarding token that register / login returns ----
@@ -61,9 +68,9 @@ Riderroute.get("/rider/availability/offline", limit(30), Authmiddleware, (req, r
     req.body = { isOnline: false };
     return SetAvailability(req, res);
 });
-Riderroute.patch("/rider/availability", limit(20), Authmiddleware, SetAvailability);
-Riderroute.post("/rider/availability", limit(20), Authmiddleware, SetAvailability);
-Riderroute.put("/rider/availability", limit(20), Authmiddleware, SetAvailability);
-Riderroute.delete("/rider/account", limit(2), Authmiddleware, DeleteAccount);
+Riderroute.patch("/rider/availability", limit(15), Authmiddleware, SetAvailability);
+
+// account deletion
+Riderroute.delete("/rider/account", limit(3), Authmiddleware, DeleteAccount);
 
 export default Riderroute;

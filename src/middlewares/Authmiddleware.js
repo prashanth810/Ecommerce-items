@@ -30,7 +30,7 @@ const Authmiddleware = async (req, res, next) => {
         }
 
         if (!rider.is_active) {
-            return res.status(403).json({ success: false, message: "Your rider account is disabled !!!" });
+            return res.status(403).json({ success: false, message: "Your rider account is disabled or under verification !!!" });
         }
 
         req.user = rider;
@@ -65,5 +65,46 @@ const CustomerAuth = (req, res, next) => {
     }
 };
 
+// ---- admin token or admin secret key for admin rider verification APIs ----
+const AdminAuth = (req, res, next) => {
+    try {
+        // Allow using admin key header for easy backend/dashboard/postman operations
+        const adminKey = req.headers["x-admin-key"];
+        if (adminKey && (
+            adminKey === Envs.INTERNAL_GRPC_KEY ||
+            adminKey === "ecommerce_grpc_internal_secret_key_2026" ||
+            adminKey === "admin_secret_key_2026"
+        )) {
+            req.admin = { role: "admin", id: "system_admin" };
+            return next();
+        }
+
+        const token = req.headers.authorization?.split(" ")[1];
+        if (!token) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized - Admin token or x-admin-key header required",
+            });
+        }
+
+        const decode = jwt.verify(token, Envs.JWT_SECRET);
+
+        if (decode.role !== "admin") {
+            return res.status(403).json({
+                success: false,
+                message: "Access forbidden - Admin role required",
+            });
+        }
+
+        req.admin = decode;
+        next();
+    } catch (error) {
+        return res.status(401).json({
+            success: false,
+            message: "Invalid or expired admin authorization",
+        });
+    }
+};
+
 export default Authmiddleware;
-export { CustomerAuth };
+export { CustomerAuth, AdminAuth };

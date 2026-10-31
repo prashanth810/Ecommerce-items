@@ -7,9 +7,11 @@ import ConnectionDB from "./config/ConnectionDB.js";
 import Riderroute from "./routes/Riderroutes.js";
 import Deliveryroute from "./routes/Deliveryroutes.js";
 import Otproute from "./routes/Otproutes.js";
+import Adminrouter from "./routes/Adminroutes.js";
 import startGrpcServer from "./grpc/Grpcserver.js";
 import { startReconciler } from "./grpc/Reconcile.js";
 import { initSocket } from "./socket/Socket.js";
+import healthRouter from "./health/health.routes.js";
 
 const app = express();
 
@@ -28,7 +30,7 @@ const corsOptions = {
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin", "x-admin-key"],
     exposedHeaders: ["Authorization"],
 };
 
@@ -44,9 +46,11 @@ app.get("/", (req, res) => {
 
 // rider register / login / onboarding / profile  (Riderroutes.js)
 // deliveries (Deliveryroutes.js) and the customer delivery otp (Otproutes.js)
+// admin rider verification (Adminroutes.js)
 app.use("/api/auth/v6", Riderroute);
 app.use("/api/auth/v6", Deliveryroute);
 app.use("/api/auth/v6", Otproute);
+app.use("/api/auth/v6", Adminrouter);
 
 // unknown url
 app.use((req, res) => {
@@ -58,21 +62,29 @@ app.use((error, req, res, next) => {
     if (error?.type === "entity.parse.failed") {
         return res.status(400).json({ success: false, message: "Invalid JSON body !!!" });
     }
-    console.error("Unhandled error:", error.message);
-    return res.status(error.status || 500).json({ success: false, message: "Something went wrong. Please try again." });
+    console.error("Unhandled error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error !!!" });
 });
 
-// http server is needed because socket.io shares it with express
+// socket.io needs the plain node http server, not just express
 const server = http.createServer(app);
 initSocket(server);
 
-ConnectionDB().then(() => {
-    server.listen(PORT, () => {
-        console.log(`Rider service is running on port ${PORT}`);
+
+app.use("/health", healthRouter); // HEALTH (before all other routes)
+
+ConnectionDB()
+    .then(() => {
+        server.listen(PORT, () => {
+            console.log(`Rider service is running on port ${PORT}`);
+        });
+
+        startGrpcServer();
+
+        // 3-way reconciliation (runs in the background, never blocks boot)
+        startReconciler();
+    })
+    .catch((error) => {
+        console.error("Database connection failed, stopping rider service:", error.message);
+        process.exit(1);
     });
-    startGrpcServer();
-    startReconciler();
-}).catch((error) => {
-    console.log("error starting the server", error);
-    process.exit(1);
-});

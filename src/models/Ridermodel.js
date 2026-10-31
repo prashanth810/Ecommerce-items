@@ -1,8 +1,9 @@
 import mongoose from "mongoose";
 
 // Rider account. Riders are created in this service: register -> personal / vehicle / document
-// details -> submit (see Riderauthcontroller.js). Only a rider who finished every step exists here,
-// so only finished riders can log in. The private document ids are stripped from every response (see toJSON).
+// details -> submit (see Riderauthcontroller.js).
+// Account is created in "pending" status and is disabled (is_active: false) until verified by an admin.
+// Once verified by admin, is_verified and is_active become true, and a notification email is sent.
 const RiderSchema = new mongoose.Schema({
     name: {
         type: String, required: true, trim: true, minlength: 2, maxlength: 50
@@ -29,7 +30,18 @@ const RiderSchema = new mongoose.Schema({
     licenseNumber: { type: String, trim: true, uppercase: true, default: "" },
 
     role: { type: String, default: "delivery", immutable: true },
-    is_active: { type: Boolean, default: true },   // account enabled
+
+    // Account verification fields
+    is_active: { type: Boolean, default: false },   // Account enabled only after admin verification
+    is_verified: { type: Boolean, default: false }, // Approved by admin
+    verification_status: {
+        type: String,
+        enum: ["pending", "verified", "rejected"],
+        default: "pending",
+    },
+    verification_notes: { type: String, default: "" },
+    verifiedAt: { type: Date, default: null },
+
     isOnline: { type: Boolean, default: false },   // available to take deliveries
 
     // details collected during onboarding (Riderauthcontroller.js)
